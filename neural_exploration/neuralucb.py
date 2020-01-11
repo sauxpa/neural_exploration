@@ -3,6 +3,7 @@ from keras.models import Sequential
 from keras.optimizers import Adam
 from keras import backend as K
 from keras.layers import Dense
+from keras.regularizers import l2
 from .ucb import UCB
 
 
@@ -38,7 +39,7 @@ class NeuralUCB(UCB):
         # neural network
         self.model = Sequential()
         self.model.add(Dense(self.hidden_size, input_dim=bandit.n_features, activation='relu'))
-        self.model.add(Dense(1, input_dim=self.hidden_size))
+        self.model.add(Dense(1, input_dim=self.hidden_size, kernel_regularizer=l2(reg_factor)))
 
         optimizer = Adam(lr=self.learning_rate)
         self.model.compile(optimizer=optimizer, loss='mean_squared_error')
