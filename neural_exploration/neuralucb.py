@@ -77,7 +77,8 @@ class NeuralUCB(UCB):
         batch = self.bandit.features[self.iteration]
         self.grad_approx = np.array(
             [
-                np.concatenate([g.flatten() for g in func([[x]])]) for x in batch
+                np.concatenate([
+                    g.flatten()/np.sqrt(self.hidden_size) for g in func([[x]])]) for x in batch
             ]
         )
    
