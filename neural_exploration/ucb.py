@@ -2,16 +2,26 @@ import numpy as np
 import abc
 from tqdm import tqdm
 
-
 class UCB(abc.ABC):
     """Base class for UBC methods.
     """
     def __init__(self,
                  bandit,
+                 reg_factor,
+                 confidence_scaling_factor=-1.0,
+                 delta=0.1,
                  throttle=int(1e2),
                 ):
         # bandit class, contains features and generated rewards
         self.bandit = bandit
+        # L2 regularization strength
+        self.reg_factor = reg_factor
+        # Confidence bound with probability 1-delta
+        self.delta = delta
+        # multiplier for the confidence bound (default is bandit reward noise std dev)
+        if confidence_scaling_factor == -1.0:
+            confidence_scaling_factor = bandit.noise_std
+        self.confidence_scaling_factor = confidence_scaling_factor
         # throttle tqdm updates
         self.throttle = throttle
         
@@ -32,12 +42,26 @@ class UCB(abc.ABC):
     def reset_actions(self):
         """Initialize cache of actions.
         """
-        self.actions = np.empty(self.bandit.T)
+        self.actions = np.empty(self.bandit.T).astype('int')
     
+    def reset_A_inv(self):
+        """Initialize n_arms square matrices of size n_features*n_features
+        """
+        self.A_inv = np.array(
+            [
+                np.eye(self.approximator_dim)/self.reg_factor for _ in self.bandit.arms
+            ]
+        )
+    
+    def reset_grad_approx(self):
+        """Initialize the gradient of the approximator w.r.t its parameters.
+        """
+        self.grad_approx = np.zeros((self.bandit.n_arms, self.approximator_dim))
+
     def sample_action(self):
         """Return the action to play based on current estimates
         """
-        return np.argmax(self.upper_confidence_bounds[self.iteration])
+        return np.argmax(self.upper_confidence_bounds[self.iteration]).astype('int')
 
     @abc.abstractmethod
     def reset(self):
@@ -46,6 +70,21 @@ class UCB(abc.ABC):
         """
         pass
 
+    @property
+    @abc.abstractmethod
+    def approximator_dim(self):
+        """Number of parameters used in the approximator.
+        """
+        pass
+    
+    @property
+    @abc.abstractmethod
+    def confidence_multiplier(self):
+        """Multiplier for the confidence exploration bonus.
+        To be defined in children classes.
+        """
+        pass
+    
     @abc.abstractmethod
     def update_confidence_bounds(self):
         """Update the confidence bounds for all arms at time t.
@@ -60,10 +99,64 @@ class UCB(abc.ABC):
         """
         pass
 
+    @abc.abstractmethod
+    def update_output_gradient(self):
+        """Compute output gradient of the approximator w.r.t its parameters.
+        """
+        pass
+    
+    @abc.abstractmethod
+    def train(self):
+        """Update approximator.
+        To be defined in children classes.
+        """
+        pass
+    
+    @abc.abstractmethod
+    def predict(self):
+        """Predict rewards based on an approximator.
+        To be defined in children classes.
+        """
+        pass
+    
+    def inv_sherman_morrison(self, u, A_inv):
+        """Inverse of a matrix with rank 1 update.
+        """
+        Au = np.dot(A_inv, u)
+        A_inv -= np.outer(Au, Au)/(1+np.dot(u.T, Au))
+        return A_inv
+
+    def update_confidence_bounds(self):
+        """Update confidence bounds and related quantities for all arms.
+        """
+        self.update_output_gradient()
+        
+        # UCB exploration bonus
+        self.exploration_bonus[self.iteration] = np.array(
+            [
+                self.confidence_multiplier * np.sqrt(np.dot(self.grad_approx[a], np.dot(self.A_inv[a], self.grad_approx[a].T))) for a in self.bandit.arms
+            ]
+        )
+        
+        # update reward prediction mu_hat
+        self.predict()
+        
+        # estimated combined bound for reward
+        self.upper_confidence_bounds[self.iteration] = self.mu_hat[self.iteration] + self.exploration_bonus[self.iteration]
+        
+    def update_chosen_arm(self):
+        self.A_inv[self.action] = self.inv_sherman_morrison(
+            self.grad_approx[self.action],
+            self.A_inv[self.action]
+        )
+        
     def run(self):
         """Run an episode of bandit.
         """
-        postfix = {'cum_regret': 0.0}
+        postfix = {
+            'total regret': 0.0,
+            '% optimal arm': 0.0,
+        }
         with tqdm(total=self.bandit.T, postfix=postfix) as pbar:
             for t in range(self.bandit.T):
                 # update confidence of all arms based on observed features at time t
@@ -71,6 +164,8 @@ class UCB(abc.ABC):
                 # pick action with the highest boosted estimated reward
                 self.action = self.sample_action()
                 self.actions[t] = self.action
+                # update approximator
+                self.train()
                 # update A and b for chosen action
                 self.update_chosen_arm()
                 # compute regret
@@ -79,102 +174,12 @@ class UCB(abc.ABC):
                 self.iteration += 1
                 
                 # log
-                postfix['cum_regret'] += self.regrets[t]
+                postfix['total regret'] += self.regrets[t]
+                n_optimal_arm = np.sum(
+                    self.actions[:self.iteration]==self.bandit.best_actions_oracle[:self.iteration]
+                )
+                postfix['% optimal arm'] = '{:.2%}'.format(n_optimal_arm / self.iteration)
+                
                 if t % self.throttle == 0:
                     pbar.set_postfix(postfix)
                     pbar.update(self.throttle)
-            
-class LinUCB(UCB):
-    """Liner UCB.
-    """
-    def __init__(self,
-                 bandit,
-                 reg_factor=1.0,
-                 delta=0.01,
-                 bound_theta=1.0,
-                 confidence_scaling_factor=0.0,
-                ):
-
-        # L2 regularization strength
-        self.reg_factor = reg_factor
-        # Confidence bound with probability 1-delta
-        self.delta = delta
-        # range of the linear predictors
-        self.bound_theta = bound_theta
-        # multiplier for the confidence bound
-        # (default is bandit reward noise std dev)
-        if confidence_scaling_factor == 0.0:
-            confidence_scaling_factor = bandit.noise_std
-        self.confidence_scaling_factor = confidence_scaling_factor
-        
-        # maximum L2 norm for the features across all arms and all rounds
-        self.bound_features = np.max(np.linalg.norm(bandit.features, ord=2, axis=-1))
-
-        super().__init__(bandit)
-
-    def reset(self):
-        """Return the internal estimates
-        """
-        self.reset_upper_confidence_bounds()
-        self.reset_regrets()
-        self.reset_actions()
-        self.iteration = 0
-
-        # randomly initialize linear predictors within their bounds
-        self.theta = np.random.uniform(-1, 1, (self.bandit.n_arms, self.bandit.n_features)) * self.bound_theta
-
-        # n_arms square matrices of size n_features*n_features
-        self.A_inv = np.array(
-            [
-                np.eye(self.bandit.n_features)/self.reg_factor for _ in self.bandit.arms
-            ]
-        )
-
-        # initialize reward-weighted features sum at zero
-        self.b = np.zeros((self.bandit.n_arms, self.bandit.n_features))
-
-    @property
-    def alpha(self):
-        """LinUCB confidence interval multiplier.
-        """
-        return self.confidence_scaling_factor \
-    * np.sqrt(self.bandit.n_features*np.log((1+self.iteration*self.bound_features/self.reg_factor)/self.delta))\
-    + np.sqrt(self.reg_factor)*np.linalg.norm(self.theta, ord=2)
-
-    def update_confidence_bounds(self):
-        """Update confidence bounds and related quantities for all arms.
-        """
-        # update theta
-        self.theta = np.array(
-            [
-                np.matmul(self.A_inv[a], self.b[a]) for a in self.bandit.arms
-            ]
-        )
-        
-        # features at current time
-        u = self.bandit.features[self.iteration]
-
-        # estimated average reward
-        self.mu_hat[self.iteration] = np.array(
-            [
-                np.dot(u[a], self.theta[a]) for a in self.bandit.arms
-            ]
-        )
-        
-        # UCB exploration bonus
-        self.exploration_bonus[self.iteration] = np.array(
-            [
-                self.alpha * np.sqrt(np.dot(u[a], np.dot(self.A_inv[a], u[a].T))) for a in self.bandit.arms
-            ]
-        )
-
-        # estimated combined bound for reward
-        self.upper_confidence_bounds[self.iteration] = self.mu_hat[self.iteration] + self.exploration_bonus[self.iteration]
-
-    def update_chosen_arm(self):
-        u_at = self.bandit.features[self.iteration, self.action]
-        # Sherman-Morrison formula
-        Au = np.dot(self.A_inv[self.action], u_at)
-
-        self.A_inv[self.action] -= np.outer(Au, Au)/(1+np.dot(u_at.T, Au))
-        self.b[self.action] += u_at*self.bandit.rewards[self.iteration, self.action]
