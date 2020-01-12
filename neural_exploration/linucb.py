@@ -3,7 +3,7 @@ from .ucb import UCB
 
 
 class LinUCB(UCB):
-    """Liner UCB.
+    """Linear UCB.
     """
     def __init__(self,
                  bandit,

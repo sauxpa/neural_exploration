@@ -2,17 +2,19 @@ import numpy as np
 import abc
 from tqdm import tqdm
 
+from .utils import inv_sherman_morrison
+
 class UCB(abc.ABC):
     """Base class for UBC methods.
     """
     def __init__(self,
                  bandit,
-                 reg_factor,
+                 reg_factor=1.0,
                  confidence_scaling_factor=-1.0,
                  delta=0.1,
                  throttle=int(1e2),
                 ):
-        # bandit class, contains features and generated rewards
+        # bandit object, contains features and generated rewards
         self.bandit = bandit
         # L2 regularization strength
         self.reg_factor = reg_factor
@@ -45,7 +47,8 @@ class UCB(abc.ABC):
         self.actions = np.empty(self.bandit.T).astype('int')
     
     def reset_A_inv(self):
-        """Initialize n_arms square matrices of size n_features*n_features
+        """Initialize n_arms square matrices representing the inverses
+        of exploration bonus matrices.
         """
         self.A_inv = np.array(
             [
@@ -93,13 +96,6 @@ class UCB(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def update_chosen_arm(self):
-        """Update the parameters for the arm chosen at time t.
-        To be defined in children classes.
-        """
-        pass
-
-    @abc.abstractmethod
     def update_output_gradient(self):
         """Compute output gradient of the approximator w.r.t its parameters.
         """
@@ -118,13 +114,6 @@ class UCB(abc.ABC):
         To be defined in children classes.
         """
         pass
-    
-    def inv_sherman_morrison(self, u, A_inv):
-        """Inverse of a matrix with rank 1 update.
-        """
-        Au = np.dot(A_inv, u)
-        A_inv -= np.outer(Au, Au)/(1+np.dot(u.T, Au))
-        return A_inv
 
     def update_confidence_bounds(self):
         """Update confidence bounds and related quantities for all arms.
@@ -144,8 +133,8 @@ class UCB(abc.ABC):
         # estimated combined bound for reward
         self.upper_confidence_bounds[self.iteration] = self.mu_hat[self.iteration] + self.exploration_bonus[self.iteration]
         
-    def update_chosen_arm(self):
-        self.A_inv[self.action] = self.inv_sherman_morrison(
+    def update_A_inv(self):
+        self.A_inv[self.action] = inv_sherman_morrison(
             self.grad_approx[self.action],
             self.A_inv[self.action]
         )
@@ -166,8 +155,8 @@ class UCB(abc.ABC):
                 self.actions[t] = self.action
                 # update approximator
                 self.train()
-                # update A and b for chosen action
-                self.update_chosen_arm()
+                # update exploration indicator A_inv
+                self.update_A_inv()
                 # compute regret
                 self.regrets[t] = self.bandit.best_rewards_oracle[t]-self.bandit.rewards[t, self.action]
                 # increment counter
