@@ -7,6 +7,7 @@ from keras.layers import Dense
 from keras.regularizers import l2
 from .ucbvi import UCBVI
 
+import gc
 
 class NeuralUCBVI(UCBVI):
     """Value Iteration with NeuralUCB exploration.
@@ -71,6 +72,7 @@ class NeuralUCBVI(UCBVI):
     def update_output_gradient(self):
         """For linear approximators, simply returns the features.
         """
+        ### THIS IS SLOW (AND LEAKING MEMORY)
         func = self.output_gradient_func
         
         self.grad_approx = np.array(

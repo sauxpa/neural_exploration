@@ -74,6 +74,7 @@ class NeuralUCB(UCB):
     def update_output_gradient(self):
         """Get gradient of network prediction w.r.t network weights.
         """
+        ### THIS IS SLOW (AND LEAKING MEMORY)
         func = self.output_gradient_func
         batch = self.bandit.features[self.iteration]
         
