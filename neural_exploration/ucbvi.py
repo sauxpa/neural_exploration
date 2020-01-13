@@ -145,20 +145,13 @@ class UCBVI(abc.ABC):
         self.update_output_gradient()
         
         # UCB exploration bonus
-        self.exploration_bonus[self.mdp.iteration] = np.array(
-            [
-                self.confidence_multiplier * np.sqrt(
-                    np.dot(
-                        self.grad_approx[s, a], 
-                        np.dot(
-                            self.A_inv[self.mdp.iteration], 
-                            self.grad_approx[s, a]
-                        )
-                    )
-                ) for s, a in itertools.product(self.mdp.states, self.mdp.actions)
-            ]
-        ).reshape(self.mdp.n_states, self.mdp.n_actions)
-        
+        g_flatT = self.grad_approx.flatten().reshape(self.approximator_dim, -1).T
+        self.exploration_bonus[self.mdp.iteration] = self.confidence_multiplier * np.sqrt(
+                np.einsum('...i,...i->...', g_flatT.dot(self.A_inv[self.mdp.iteration]), g_flatT)
+            ).reshape(self.mdp.n_states, self.mdp.n_actions)
+        # alternative writing:
+        # bonus = (g.T.dot(A_inv)*g.T).sum(axis=1)
+
         # update reward prediction Q_hat
         self.predict()
         

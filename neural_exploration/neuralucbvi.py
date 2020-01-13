@@ -1,20 +1,22 @@
 import numpy as np
+import itertools
 from keras.models import Sequential
 from keras.optimizers import Adam
 from keras import backend as K
 from keras.layers import Dense
 from keras.regularizers import l2
-from .ucb import UCB
+from .ucbvi import UCBVI
 
 
-class NeuralUCB(UCB):
-    """Neural UCB.
+class NeuralUCBVI(UCBVI):
+    """Value Iteration with NeuralUCB exploration.
     """
     def __init__(self,
-                 bandit,
+                 mdp,
                  hidden_size=20,
+                 n_episodes=1,
+                 init_state=0,
                  reg_factor=1.0,
-                 delta=0.01,
                  confidence_scaling_factor=-1.0,
                  training_window=100,
                  learning_rate=0.01,
@@ -38,16 +40,17 @@ class NeuralUCB(UCB):
         
         # neural network
         self.model = Sequential()
-        self.model.add(Dense(self.hidden_size, input_dim=bandit.n_features, activation='relu'))
+        self.model.add(Dense(self.hidden_size, input_dim=mdp.n_features, activation='relu'))
         self.model.add(Dense(1, input_dim=self.hidden_size, kernel_regularizer=l2(reg_factor)))
 
         optimizer = Adam(lr=self.learning_rate)
         self.model.compile(optimizer=optimizer, loss='mean_squared_error')
-
-        super().__init__(bandit, 
+        
+        super().__init__(mdp,
+                         n_episodes=n_episodes,
+                         init_state=init_state,
                          reg_factor=reg_factor,
                          confidence_scaling_factor=confidence_scaling_factor,
-                         delta=delta,
                          throttle=throttle,
                         )
 
@@ -56,12 +59,6 @@ class NeuralUCB(UCB):
         """Sum of the dimensions of all trainable layers in the network.
         """
         return self.model.count_params()
-
-    @property
-    def confidence_multiplier(self):
-        """Constant equal to confidence_scaling_factor
-        """
-        return self.confidence_scaling_factor
     
     @property
     def output_gradient_func(self):
@@ -70,41 +67,46 @@ class NeuralUCB(UCB):
         grads = K.gradients(self.model.output, self.model.trainable_weights)
         inputs = self.model.inputs
         return K.function(inputs, grads)
-
+    
     def update_output_gradient(self):
-        """Get gradient of network prediction w.r.t network weights.
+        """For linear approximators, simply returns the features.
         """
         func = self.output_gradient_func
-        batch = self.bandit.features[self.iteration]
         
-        print(batch.shape)
-
         self.grad_approx = np.array(
             [
-                np.concatenate([
-                    g.flatten()/np.sqrt(self.hidden_size) for g in func([[x]])
-                ]) for x in batch
+                np.concatenate(
+                    [
+                        g.flatten()/np.sqrt(self.hidden_size) for g in func([[
+                            self.mdp.features[s, a]
+                        ]])
+                    ]) for s, a in itertools.product(self.mdp.states, self.mdp.actions)
             ]
-        )
-   
+        ).reshape(self.mdp.n_states, self.mdp.n_actions, self.approximator_dim)
+
     def reset(self):
-        """Reset the internal estimates.
+        """Return the internal estimates
         """
         self.reset_upper_confidence_bounds()
         self.reset_regrets()
-        self.reset_actions()
+        self.reset_policy()
+        self.reset_state_action_reward_buffer()
         self.reset_A_inv()
         self.reset_grad_approx()
-        self.iteration = 0
 
-    def train(self):
-        """Train neural approximator.
+    @property
+    def confidence_multiplier(self):
+        """LinUCB confidence interval multiplier.
         """
-        iterations_so_far = range(np.max([0, self.iteration-self.training_window]), self.iteration+1)
-        actions_so_far = self.actions[np.max([0, self.iteration-self.training_window]):self.iteration+1]
-
-        x_train = self.bandit.features[iterations_so_far, actions_so_far]
-        y_train = self.bandit.rewards[iterations_so_far, actions_so_far]
+        return self.confidence_scaling_factor
+    
+    def train(self):
+        """Update linear predictor theta.
+        """
+        x_train = np.array([self.mdp.features[self.state, self.action]])
+        y_train = np.array([self.reward + np.max(
+            self.Q_hat[self.mdp.iteration+1, self.buffer_states[self.mdp.iteration+1]]
+        )])
         
         self.model.fit(x_train,
                        y_train,
@@ -112,10 +114,16 @@ class NeuralUCB(UCB):
                        epochs=self.epochs,
                        verbose=self.nn_verbose,
                       )
-        
+    
     def predict(self):
         """Predict reward.
         """
-        self.mu_hat[self.iteration] = self.model.predict(
-            self.bandit.features[self.iteration]
-        ).squeeze()
+#         self.Q_hat[self.mdp.iteration] = np.array(
+#             [
+#                 self.model.predict([[self.mdp.features[s, a]]]).squeeze() for s, a in itertools.product(self.mdp.states, self.mdp.actions)
+#             ]
+#         ).reshape(self.mdp.n_states, self.mdp.n_actions)
+
+        self.Q_hat[self.mdp.iteration] = self.model.predict(
+            [self.mdp.features_flat]
+        ).reshape(self.mdp.n_states, self.mdp.n_actions)

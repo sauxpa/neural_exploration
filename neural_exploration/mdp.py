@@ -72,6 +72,7 @@ class MDPFeatures():
         x = np.random.randn(self.n_states, self.n_actions, self.n_features)
         x /= np.repeat(np.linalg.norm(x, axis=-1, ord=2), self.n_features).reshape(self.n_states, self.n_actions, self.n_features)
         self.features = x
+        self.features_flat = x.flatten().reshape(-1, self.n_features)
 
     def reset_rewards(self):
         """Generate rewards for each transition (state, action, next_state) and each round,
