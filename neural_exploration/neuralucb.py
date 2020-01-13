@@ -77,8 +77,6 @@ class NeuralUCB(UCB):
         func = self.output_gradient_func
         batch = self.bandit.features[self.iteration]
         
-        print(batch.shape)
-
         self.grad_approx = np.array(
             [
                 np.concatenate([
