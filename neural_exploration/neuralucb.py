@@ -1,11 +1,9 @@
 import numpy as np
-from keras.models import Sequential
-from keras.optimizers import Adam
-from keras import backend as K
-from keras.layers import Dense
-from keras.regularizers import l2
+import torch
+import torch.nn as nn
 from .ucb import UCB
-
+from .utils import Model
+    
 
 class NeuralUCB(UCB):
     """Neural UCB.
@@ -20,8 +18,8 @@ class NeuralUCB(UCB):
                  learning_rate=0.01,
                  batch_size=1,
                  epochs=50,
-                 nn_verbose=0,
                  throttle=1,
+                 use_cuda=False,
                 ):
 
         # hidden size of the NN layers
@@ -34,15 +32,13 @@ class NeuralUCB(UCB):
         self.learning_rate = learning_rate
         self.batch_size = batch_size
         self.epochs = epochs
-        self.nn_verbose = nn_verbose
         
         # neural network
-        self.model = Sequential()
-        self.model.add(Dense(self.hidden_size, input_dim=bandit.n_features, activation='relu'))
-        self.model.add(Dense(1, input_dim=self.hidden_size, kernel_regularizer=l2(reg_factor)))
-
-        optimizer = Adam(lr=self.learning_rate)
-        self.model.compile(optimizer=optimizer, loss='mean_squared_error')
+        self.use_cuda = use_cuda
+        self.device = torch.device('cuda' if torch.cuda.is_available() and self.use_cuda else 'cpu')
+    
+        self.model = Model(bandit.n_features, self.hidden_size).to(self.device)
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate)
 
         super().__init__(bandit, 
                          reg_factor=reg_factor,
@@ -55,37 +51,27 @@ class NeuralUCB(UCB):
     def approximator_dim(self):
         """Sum of the dimensions of all trainable layers in the network.
         """
-        return self.model.count_params()
-
+        return sum(w.numel() for w in self.model.parameters() if w.requires_grad)
+    
     @property
     def confidence_multiplier(self):
         """Constant equal to confidence_scaling_factor
         """
         return self.confidence_scaling_factor
     
-    @property
-    def output_gradient_func(self):
-        """Function to get and compute network gradient.
-        """
-        grads = K.gradients(self.model.output, self.model.trainable_weights)
-        inputs = self.model.inputs
-        return K.function(inputs, grads)
-
     def update_output_gradient(self):
         """Get gradient of network prediction w.r.t network weights.
         """
-        ### THIS IS SLOW (AND LEAKING MEMORY)
-        func = self.output_gradient_func
-        batch = self.bandit.features[self.iteration]
-        
-        self.grad_approx = np.array(
-            [
-                np.concatenate([
-                    g.flatten()/np.sqrt(self.hidden_size) for g in func([[x]])
-                ]) for x in batch
-            ]
-        )
-   
+        for a in self.bandit.arms:
+            x = torch.FloatTensor(self.bandit.features[self.iteration, a].reshape(1,-1))
+            self.model.zero_grad()
+            y = self.model(x)
+            y.backward()
+
+            self.grad_approx[a] = np.concatenate(
+                [w.grad.detach().numpy().flatten() for w in self.model.parameters() if w.requires_grad]
+            ) / np.sqrt(self.hidden_size)
+            
     def reset(self):
         """Reset the internal estimates.
         """
@@ -102,19 +88,19 @@ class NeuralUCB(UCB):
         iterations_so_far = range(np.max([0, self.iteration-self.training_window]), self.iteration+1)
         actions_so_far = self.actions[np.max([0, self.iteration-self.training_window]):self.iteration+1]
 
-        x_train = self.bandit.features[iterations_so_far, actions_so_far]
-        y_train = self.bandit.rewards[iterations_so_far, actions_so_far]
+        x_train = torch.FloatTensor(self.bandit.features[iterations_so_far, actions_so_far]).to(self.device)
+        y_train = torch.FloatTensor(self.bandit.rewards[iterations_so_far, actions_so_far]).to(self.device)
+        y_pred = self.model.forward(x_train).squeeze()
         
-        self.model.fit(x_train,
-                       y_train,
-                       batch_size=self.batch_size,
-                       epochs=self.epochs,
-                       verbose=self.nn_verbose,
-                      )
+        loss = nn.MSELoss()(y_train, y_pred)
+       
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
         
     def predict(self):
         """Predict reward.
         """
-        self.mu_hat[self.iteration] = self.model.predict(
-            self.bandit.features[self.iteration]
-        ).squeeze()
+        self.mu_hat[self.iteration] = self.model.forward(
+            torch.FloatTensor(self.bandit.features[self.iteration]).to(self.device)
+        ).detach().squeeze()

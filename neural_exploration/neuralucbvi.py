@@ -1,13 +1,10 @@
 import numpy as np
 import itertools
-from keras.models import Sequential
-from keras.optimizers import Adam
-from keras import backend as K
-from keras.layers import Dense
-from keras.regularizers import l2
+import torch
+import torch.nn as nn
 from .ucbvi import UCBVI
+from .utils import Model
 
-import gc
 
 class NeuralUCBVI(UCBVI):
     """Value Iteration with NeuralUCB exploration.
@@ -23,8 +20,8 @@ class NeuralUCBVI(UCBVI):
                  learning_rate=0.01,
                  batch_size=1,
                  epochs=50,
-                 nn_verbose=0,
                  throttle=1,
+                 use_cuda=False,
                 ):
 
         # hidden size of the NN layers
@@ -37,15 +34,13 @@ class NeuralUCBVI(UCBVI):
         self.learning_rate = learning_rate
         self.batch_size = batch_size
         self.epochs = epochs
-        self.nn_verbose = nn_verbose
         
         # neural network
-        self.model = Sequential()
-        self.model.add(Dense(self.hidden_size, input_dim=mdp.n_features, activation='relu'))
-        self.model.add(Dense(1, input_dim=self.hidden_size, kernel_regularizer=l2(reg_factor)))
-
-        optimizer = Adam(lr=self.learning_rate)
-        self.model.compile(optimizer=optimizer, loss='mean_squared_error')
+        self.use_cuda = use_cuda
+        self.device = torch.device('cuda' if torch.cuda.is_available() and self.use_cuda else 'cpu')
+    
+        self.model = Model(mdp.n_features, self.hidden_size).to(self.device)
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate)
         
         super().__init__(mdp,
                          n_episodes=n_episodes,
@@ -59,32 +54,21 @@ class NeuralUCBVI(UCBVI):
     def approximator_dim(self):
         """Sum of the dimensions of all trainable layers in the network.
         """
-        return self.model.count_params()
-    
-    @property
-    def output_gradient_func(self):
-        """Function to get and compute network gradient.
-        """
-        grads = K.gradients(self.model.output, self.model.trainable_weights)
-        inputs = self.model.inputs
-        return K.function(inputs, grads)
+        return sum(w.numel() for w in self.model.parameters() if w.requires_grad)    
     
     def update_output_gradient(self):
-        """For linear approximators, simply returns the features.
+        """Get gradient of network prediction w.r.t network weights.
         """
-        ### THIS IS SLOW (AND LEAKING MEMORY)
-        func = self.output_gradient_func
+        for s, a in itertools.product(self.mdp.states, self.mdp.actions):
+            x = torch.FloatTensor(self.mdp.features[s, a].reshape(1,-1))
+            self.model.zero_grad()
+            y = self.model(x)
+            y.backward()
+
+            self.grad_approx[s, a] = np.concatenate(
+                [w.grad.detach().numpy().flatten() for w in self.model.parameters() if w.requires_grad]
+            ) / np.sqrt(self.hidden_size)
         
-        self.grad_approx = np.array(
-            [
-                np.concatenate(
-                    [
-                        g.flatten()/np.sqrt(self.hidden_size) for g in func([[
-                            self.mdp.features[s, a]
-                        ]])
-                    ]) for s, a in itertools.product(self.mdp.states, self.mdp.actions)
-            ]
-        ).reshape(self.mdp.n_states, self.mdp.n_actions, self.approximator_dim)
 
     def reset(self):
         """Return the internal estimates
@@ -95,7 +79,7 @@ class NeuralUCBVI(UCBVI):
         self.reset_state_action_reward_buffer()
         self.reset_A_inv()
         self.reset_grad_approx()
-
+        
     @property
     def confidence_multiplier(self):
         """LinUCB confidence interval multiplier.
@@ -105,27 +89,23 @@ class NeuralUCBVI(UCBVI):
     def train(self):
         """Update linear predictor theta.
         """
-        x_train = np.array([self.mdp.features[self.state, self.action]])
-        y_train = np.array([self.reward + np.max(
+        x_train = torch.FloatTensor(self.mdp.features[self.state, self.action]).to(self.device)
+        y_train = torch.FloatTensor([self.reward + np.max(
             self.Q_hat[self.mdp.iteration+1, self.buffer_states[self.mdp.iteration+1]]
         )])
         
-        self.model.fit(x_train,
-                       y_train,
-                       batch_size=self.batch_size,
-                       epochs=self.epochs,
-                       verbose=self.nn_verbose,
-                      )
-    
+        y_pred = self.model.forward(x_train).squeeze()
+        
+        loss = nn.MSELoss()(y_train, y_pred)
+       
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+        
     def predict(self):
         """Predict reward.
         """
-#         self.Q_hat[self.mdp.iteration] = np.array(
-#             [
-#                 self.model.predict([[self.mdp.features[s, a]]]).squeeze() for s, a in itertools.product(self.mdp.states, self.mdp.actions)
-#             ]
-#         ).reshape(self.mdp.n_states, self.mdp.n_actions)
-
-        self.Q_hat[self.mdp.iteration] = self.model.predict(
-            [self.mdp.features_flat]
-        ).reshape(self.mdp.n_states, self.mdp.n_actions)
+        self.Q_hat[self.mdp.iteration] = self.model.forward(
+            torch.FloatTensor(self.mdp.features_flat).to(self.device)
+        ).detach().reshape(self.mdp.n_states, self.mdp.n_actions)
+        

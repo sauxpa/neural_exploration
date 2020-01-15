@@ -197,6 +197,8 @@ class UCBVI(abc.ABC):
                 
                 self.mdp.reset_iteration('forward')
                 self.state = self.init_state
+                self.buffer_states[0] = self.state
+
                 for h in range(self.mdp.H):
                     # udpate policy to be greedy w.r.t boosted Q function and pick action
                     self.take_action()
@@ -208,7 +210,7 @@ class UCBVI(abc.ABC):
                     # update buffers
                     self.buffer_actions[h] = self.action
                     self.buffer_rewards[h] = self.reward
-                    self.buffer_states[h+1] = self.state 
+                    self.buffer_states[h+1] = self.state
                     
                     # increment MDP counter
                     self.mdp.iteration += 1
