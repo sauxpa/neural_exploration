@@ -16,7 +16,7 @@ class NeuralUCBVI(UCBVI):
                  init_state=0,
                  reg_factor=1.0,
                  confidence_scaling_factor=-1.0,
-                 training_window=100,
+                 p=0.0,
                  learning_rate=0.01,
                  batch_size=1,
                  epochs=50,
@@ -27,19 +27,22 @@ class NeuralUCBVI(UCBVI):
         # hidden size of the NN layers
         self.hidden_size = hidden_size
         
-        # number of rewards in the training buffer
-        self.training_window = training_window
-        
         # NN parameters
         self.learning_rate = learning_rate
         self.batch_size = batch_size
         self.epochs = epochs
         
-        # neural network
         self.use_cuda = use_cuda
+        if self.use_cuda:
+            raise Exception(
+                'Not yet CUDA compatible : TODO for later (not necessary to obtain good results')
         self.device = torch.device('cuda' if torch.cuda.is_available() and self.use_cuda else 'cpu')
     
-        self.model = Model(mdp.n_features, self.hidden_size).to(self.device)
+        # dropout rate
+        self.p = p
+        
+        # neural network
+        self.model = Model(mdp.n_features, self.hidden_size, self.p).to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate)
         
         super().__init__(mdp,
@@ -60,15 +63,14 @@ class NeuralUCBVI(UCBVI):
         """Get gradient of network prediction w.r.t network weights.
         """
         for s, a in itertools.product(self.mdp.states, self.mdp.actions):
-            x = torch.FloatTensor(self.mdp.features[s, a].reshape(1,-1))
+            x = torch.FloatTensor(self.mdp.features[s, a].reshape(1,-1)).to(self.device)
             self.model.zero_grad()
             y = self.model(x)
             y.backward()
 
-            self.grad_approx[s, a] = np.concatenate(
-                [w.grad.detach().numpy().flatten() for w in self.model.parameters() if w.requires_grad]
-            ) / np.sqrt(self.hidden_size)
-        
+            self.grad_approx[s, a] = torch.cat(
+                [w.grad.detach().flatten() / np.sqrt(self.hidden_size) for w in self.model.parameters() if w.requires_grad]
+            ).to(self.device)
 
     def reset(self):
         """Return the internal estimates
@@ -87,13 +89,15 @@ class NeuralUCBVI(UCBVI):
         return self.confidence_scaling_factor
     
     def train(self):
-        """Update linear predictor theta.
+        """Train neural approximator.
         """
         x_train = torch.FloatTensor(self.mdp.features[self.state, self.action]).to(self.device)
         y_train = torch.FloatTensor([self.reward + np.max(
             self.Q_hat[self.mdp.iteration+1, self.buffer_states[self.mdp.iteration+1]]
-        )])
+        )]).to(self.device)
         
+        # train mode
+        self.model.train()
         y_pred = self.model.forward(x_train).squeeze()
         
         loss = nn.MSELoss()(y_train, y_pred)
@@ -105,6 +109,8 @@ class NeuralUCBVI(UCBVI):
     def predict(self):
         """Predict reward.
         """
+        # eval mode
+        self.model.eval()
         self.Q_hat[self.mdp.iteration] = self.model.forward(
             torch.FloatTensor(self.mdp.features_flat).to(self.device)
         ).detach().reshape(self.mdp.n_states, self.mdp.n_actions)

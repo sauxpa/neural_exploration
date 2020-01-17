@@ -10,13 +10,16 @@ def inv_sherman_morrison(u, A_inv):
     return A_inv
 
 class Model(nn.Module):
-
-    def __init__(self, input_size, hidden_size):
+    """Template for fully connected neural network.
+    """
+    def __init__(self, input_size, hidden_size, p=0.0):
         super(Model, self).__init__()
         self.fc1 = nn.Linear(input_size, hidden_size)
         self.fc2 = nn.Linear(hidden_size, 1)
-
+        self.dropout = nn.Dropout(p=p)
+        
     def forward(self, x):
         out = F.relu(self.fc1(x))
+        out = self.dropout(out)
         out = self.fc2(out)
         return out

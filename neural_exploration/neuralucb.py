@@ -15,6 +15,7 @@ class NeuralUCB(UCB):
                  delta=0.01,
                  confidence_scaling_factor=-1.0,
                  training_window=100,
+                 p=0.0,
                  learning_rate=0.01,
                  batch_size=1,
                  epochs=50,
@@ -33,11 +34,17 @@ class NeuralUCB(UCB):
         self.batch_size = batch_size
         self.epochs = epochs
         
-        # neural network
         self.use_cuda = use_cuda
+        if self.use_cuda:
+            raise Exception(
+                'Not yet CUDA compatible : TODO for later (not necessary to obtain good results')
         self.device = torch.device('cuda' if torch.cuda.is_available() and self.use_cuda else 'cpu')
     
-        self.model = Model(bandit.n_features, self.hidden_size).to(self.device)
+        # dropout rate
+        self.p = p
+
+        # neural network
+        self.model = Model(bandit.n_features, self.hidden_size, self.p).to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate)
 
         super().__init__(bandit, 
@@ -63,14 +70,17 @@ class NeuralUCB(UCB):
         """Get gradient of network prediction w.r.t network weights.
         """
         for a in self.bandit.arms:
-            x = torch.FloatTensor(self.bandit.features[self.iteration, a].reshape(1,-1))
+            x = torch.FloatTensor(
+                self.bandit.features[self.iteration, a].reshape(1,-1)
+            ).to(self.device)
+            
             self.model.zero_grad()
             y = self.model(x)
             y.backward()
-
-            self.grad_approx[a] = np.concatenate(
-                [w.grad.detach().numpy().flatten() for w in self.model.parameters() if w.requires_grad]
-            ) / np.sqrt(self.hidden_size)
+            
+            self.grad_approx[a] = torch.cat(
+                [w.grad.detach().flatten() / np.sqrt(self.hidden_size) for w in self.model.parameters() if w.requires_grad]
+            ).to(self.device)
             
     def reset(self):
         """Reset the internal estimates.
@@ -90,6 +100,9 @@ class NeuralUCB(UCB):
 
         x_train = torch.FloatTensor(self.bandit.features[iterations_so_far, actions_so_far]).to(self.device)
         y_train = torch.FloatTensor(self.bandit.rewards[iterations_so_far, actions_so_far]).to(self.device)
+        
+        # train mode
+        self.model.train()
         y_pred = self.model.forward(x_train).squeeze()
         
         loss = nn.MSELoss()(y_train, y_pred)
@@ -101,6 +114,8 @@ class NeuralUCB(UCB):
     def predict(self):
         """Predict reward.
         """
+        # eval mode
+        self.model.eval()
         self.mu_hat[self.iteration] = self.model.forward(
             torch.FloatTensor(self.bandit.features[self.iteration]).to(self.device)
         ).detach().squeeze()
