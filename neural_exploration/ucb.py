@@ -12,6 +12,7 @@ class UCB(abc.ABC):
                  reg_factor=1.0,
                  confidence_scaling_factor=-1.0,
                  delta=0.1,
+                 train_every=1,
                  throttle=int(1e2),
                 ):
         # bandit object, contains features and generated rewards
@@ -24,6 +25,10 @@ class UCB(abc.ABC):
         if confidence_scaling_factor == -1.0:
             confidence_scaling_factor = bandit.noise_std
         self.confidence_scaling_factor = confidence_scaling_factor
+        
+        # train approximator only every few rounds
+        self.train_every = train_every
+        
         # throttle tqdm updates
         self.throttle = throttle
         
@@ -154,7 +159,8 @@ class UCB(abc.ABC):
                 self.action = self.sample_action()
                 self.actions[t] = self.action
                 # update approximator
-                self.train()
+                if t % self.train_every == 0:
+                    self.train()
                 # update exploration indicator A_inv
                 self.update_A_inv()
                 # compute regret

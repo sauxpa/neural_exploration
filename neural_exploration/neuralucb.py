@@ -11,27 +11,29 @@ class NeuralUCB(UCB):
     def __init__(self,
                  bandit,
                  hidden_size=20,
+                 n_layers=2,
                  reg_factor=1.0,
                  delta=0.01,
                  confidence_scaling_factor=-1.0,
                  training_window=100,
                  p=0.0,
                  learning_rate=0.01,
-                 batch_size=1,
-                 epochs=50,
+                 epochs=1,
+                 train_every=1,
                  throttle=1,
                  use_cuda=False,
                 ):
 
         # hidden size of the NN layers
         self.hidden_size = hidden_size
+        # number of layers
+        self.n_layers = n_layers
         
         # number of rewards in the training buffer
         self.training_window = training_window
         
         # NN parameters
         self.learning_rate = learning_rate
-        self.batch_size = batch_size
         self.epochs = epochs
         
         self.use_cuda = use_cuda
@@ -44,7 +46,11 @@ class NeuralUCB(UCB):
         self.p = p
 
         # neural network
-        self.model = Model(bandit.n_features, self.hidden_size, self.p).to(self.device)
+        self.model = Model(input_size=bandit.n_features, 
+                           hidden_size=self.hidden_size,
+                           n_layers=self.n_layers,
+                           p=self.p
+                          ).to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate)
 
         super().__init__(bandit, 
@@ -52,6 +58,7 @@ class NeuralUCB(UCB):
                          confidence_scaling_factor=confidence_scaling_factor,
                          delta=delta,
                          throttle=throttle,
+                         train_every=train_every,
                         )
 
     @property
@@ -99,17 +106,17 @@ class NeuralUCB(UCB):
         actions_so_far = self.actions[np.max([0, self.iteration-self.training_window]):self.iteration+1]
 
         x_train = torch.FloatTensor(self.bandit.features[iterations_so_far, actions_so_far]).to(self.device)
-        y_train = torch.FloatTensor(self.bandit.rewards[iterations_so_far, actions_so_far]).to(self.device)
+        y_train = torch.FloatTensor(self.bandit.rewards[iterations_so_far, actions_so_far]).squeeze().to(self.device)
         
         # train mode
         self.model.train()
-        y_pred = self.model.forward(x_train).squeeze()
+        for _ in range(self.epochs):
+            y_pred = self.model.forward(x_train).squeeze()
+            loss = nn.MSELoss()(y_train, y_pred)
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
         
-        loss = nn.MSELoss()(y_train, y_pred)
-       
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
         
     def predict(self):
         """Predict reward.

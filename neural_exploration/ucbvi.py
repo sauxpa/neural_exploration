@@ -14,6 +14,7 @@ class UCBVI(abc.ABC):
                  init_state=0,
                  reg_factor=1.0,
                  confidence_scaling_factor=-1.0,
+                 train_every=1,
                  throttle=int(1e2),
                 ):
         # MDP object, contains transition kernel and rewards as functions of features.
@@ -28,6 +29,10 @@ class UCBVI(abc.ABC):
         if confidence_scaling_factor == -1.0:
             confidence_scaling_factor = mdp.noise_std
         self.confidence_scaling_factor = confidence_scaling_factor
+        
+        # train approximator only every few rounds
+        self.train_every = train_every
+        
         # throttle tqdm updates
         self.throttle = throttle
         
@@ -187,7 +192,8 @@ class UCBVI(abc.ABC):
                         # update exploration indicator A_inv for chosen action
                         self.update_A_inv()
                         # update approximator
-                        self.train()
+                        if k % self.train_every == 0:
+                            self.train()
                     
                         # update confidence of all (state, action) pairs based on observed features 
                         self.update_confidence_bounds()

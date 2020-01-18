@@ -1,5 +1,6 @@
 import numpy as np
 import itertools
+from collections import deque
 import torch
 import torch.nn as nn
 from .ucbvi import UCBVI
@@ -12,24 +13,27 @@ class NeuralUCBVI(UCBVI):
     def __init__(self,
                  mdp,
                  hidden_size=20,
+                 n_layers=2,
                  n_episodes=1,
                  init_state=0,
                  reg_factor=1.0,
                  confidence_scaling_factor=-1.0,
                  p=0.0,
                  learning_rate=0.01,
-                 batch_size=1,
-                 epochs=50,
+                 epochs=1,
+                 train_every=1,
+                 buffer_size=1,
                  throttle=1,
                  use_cuda=False,
                 ):
 
         # hidden size of the NN layers
         self.hidden_size = hidden_size
+        # number of layers
+        self.n_layers = n_layers
         
         # NN parameters
         self.learning_rate = learning_rate
-        self.batch_size = batch_size
         self.epochs = epochs
         
         self.use_cuda = use_cuda
@@ -42,7 +46,11 @@ class NeuralUCBVI(UCBVI):
         self.p = p
         
         # neural network
-        self.model = Model(mdp.n_features, self.hidden_size, self.p).to(self.device)
+        self.model = Model(input_size=mdp.n_features, 
+                           hidden_size=self.hidden_size,
+                           n_layers=self.n_layers,
+                           p=self.p,
+                          ).to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate)
         
         super().__init__(mdp,
@@ -50,9 +58,15 @@ class NeuralUCBVI(UCBVI):
                          init_state=init_state,
                          reg_factor=reg_factor,
                          confidence_scaling_factor=confidence_scaling_factor,
+                         train_every=train_every,
                          throttle=throttle,
                         )
 
+        # store a few transition to train the NN on more than a single step at every round
+        # (one per MDP step i.e maintain 2H buffers, one for input, one for output for every step
+        # until horizon)
+        self.exp_replay_buffer_size = buffer_size
+        
     @property
     def approximator_dim(self):
         """Sum of the dimensions of all trainable layers in the network.
@@ -82,6 +96,8 @@ class NeuralUCBVI(UCBVI):
         self.reset_A_inv()
         self.reset_grad_approx()
         
+        self.exp_replay_buffers = [deque() for _ in range(2*self.mdp.H)]
+        
     @property
     def confidence_multiplier(self):
         """LinUCB confidence interval multiplier.
@@ -96,16 +112,24 @@ class NeuralUCBVI(UCBVI):
             self.Q_hat[self.mdp.iteration+1, self.buffer_states[self.mdp.iteration+1]]
         )]).to(self.device)
         
+        self.exp_replay_buffers[2*self.mdp.iteration].append(x_train)
+        self.exp_replay_buffers[2*self.mdp.iteration+1].append(y_train)
+        if len(self.exp_replay_buffers[2*self.mdp.iteration]) > self.exp_replay_buffer_size:
+            self.exp_replay_buffers[2*self.mdp.iteration].popleft()
+            self.exp_replay_buffers[2*self.mdp.iteration+1].popleft()
+        
+        x_train_buffer = torch.stack(tuple(self.exp_replay_buffers[2*self.mdp.iteration]))
+        y_train_buffer = torch.cat(tuple(self.exp_replay_buffers[2*self.mdp.iteration+1]))
+        
         # train mode
         self.model.train()
-        y_pred = self.model.forward(x_train).squeeze()
-        
-        loss = nn.MSELoss()(y_train, y_pred)
-       
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-        
+        for _ in range(self.epochs):
+            y_pred = self.model.forward(x_train_buffer).squeeze()
+            loss = nn.MSELoss()(y_train_buffer, y_pred)
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+
     def predict(self):
         """Predict reward.
         """
