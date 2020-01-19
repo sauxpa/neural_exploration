@@ -18,4 +18,6 @@ Neural exploration on the other hand rely on more sophisticated approximators, w
 
 ### Stability
 
+In some cases, neural exploration appears unstable in the sense that after an optimal policy is learned and regret stops growing, it may happen that a small perturbation pushes the network out of the optimal solution and regret starts growing again, something akin to catastrophic forgetting. 
+
 ![Unstable NeuralUCB-VI on linear rewards](https://github.com/sauxpa/neural_exploration/blob/master/neural_ucbvi_linear_unstable.pdf)
