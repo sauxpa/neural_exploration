@@ -99,8 +99,7 @@ class UCBVI(abc.ABC):
             self.upper_confidence_bounds[self.mdp.iteration],
             axis=1,
         ).astype('int')
-        self.action = 1
-        # self.action = self.policy[self.mdp.iteration, self.state]
+        self.action = self.policy[self.mdp.iteration, self.state]
 
     @abc.abstractmethod
     def reset(self):
@@ -150,16 +149,13 @@ class UCBVI(abc.ABC):
         self.update_output_gradient()
 
         # UCB exploration bonus
-        # g_flatT = self.grad_approx.flatten().reshape(self.approximator_dim, -1).T
-        # self.exploration_bonus[self.mdp.iteration] = self.confidence_multiplier * np.sqrt(
-        #         np.einsum('...i,...i->...', g_flatT.dot(self.A_inv[self.mdp.iteration]), g_flatT)
-        #     ).reshape(self.mdp.n_states, self.mdp.n_actions)
         self.exploration_bonus[self.mdp.iteration] = np.array(
             [
                 np.sqrt(self.grad_approx[s, a].T @ self.A_inv[self.mdp.iteration] @ self.grad_approx[s, a])
                 for s, a in itertools.product(self.mdp.states, self.mdp.actions)
                 ]
             ).reshape(self.mdp.n_states, self.mdp.n_actions) * self.confidence_multiplier
+
         # update reward prediction Q_hat
         self.predict()
 
