@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 from .ucb import UCB
 from .utils import Model
-    
+
 
 class NeuralUCB(UCB):
     """Neural UCB.
@@ -22,73 +22,73 @@ class NeuralUCB(UCB):
                  train_every=1,
                  throttle=1,
                  use_cuda=False,
-                ):
+                 ):
 
         # hidden size of the NN layers
         self.hidden_size = hidden_size
         # number of layers
         self.n_layers = n_layers
-        
+
         # number of rewards in the training buffer
         self.training_window = training_window
-        
+
         # NN parameters
         self.learning_rate = learning_rate
         self.epochs = epochs
-        
+
         self.use_cuda = use_cuda
         if self.use_cuda:
             raise Exception(
                 'Not yet CUDA compatible : TODO for later (not necessary to obtain good results')
         self.device = torch.device('cuda' if torch.cuda.is_available() and self.use_cuda else 'cpu')
-    
+
         # dropout rate
         self.p = p
 
         # neural network
-        self.model = Model(input_size=bandit.n_features, 
+        self.model = Model(input_size=bandit.n_features,
                            hidden_size=self.hidden_size,
                            n_layers=self.n_layers,
                            p=self.p
-                          ).to(self.device)
+                           ).to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate)
 
-        super().__init__(bandit, 
+        super().__init__(bandit,
                          reg_factor=reg_factor,
                          confidence_scaling_factor=confidence_scaling_factor,
                          delta=delta,
                          throttle=throttle,
                          train_every=train_every,
-                        )
+                         )
 
     @property
     def approximator_dim(self):
         """Sum of the dimensions of all trainable layers in the network.
         """
         return sum(w.numel() for w in self.model.parameters() if w.requires_grad)
-    
+
     @property
     def confidence_multiplier(self):
         """Constant equal to confidence_scaling_factor
         """
         return self.confidence_scaling_factor
-    
+
     def update_output_gradient(self):
         """Get gradient of network prediction w.r.t network weights.
         """
         for a in self.bandit.arms:
             x = torch.FloatTensor(
-                self.bandit.features[self.iteration, a].reshape(1,-1)
+                self.bandit.features[self.iteration, a].reshape(1, -1)
             ).to(self.device)
-            
+
             self.model.zero_grad()
             y = self.model(x)
             y.backward()
-            
+
             self.grad_approx[a] = torch.cat(
                 [w.grad.detach().flatten() / np.sqrt(self.hidden_size) for w in self.model.parameters() if w.requires_grad]
             ).to(self.device)
-            
+
     def reset(self):
         """Reset the internal estimates.
         """
@@ -107,7 +107,7 @@ class NeuralUCB(UCB):
 
         x_train = torch.FloatTensor(self.bandit.features[iterations_so_far, actions_so_far]).to(self.device)
         y_train = torch.FloatTensor(self.bandit.rewards[iterations_so_far, actions_so_far]).squeeze().to(self.device)
-        
+
         # train mode
         self.model.train()
         for _ in range(self.epochs):
@@ -116,8 +116,7 @@ class NeuralUCB(UCB):
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
-        
-        
+
     def predict(self):
         """Predict reward.
         """

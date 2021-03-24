@@ -1,5 +1,7 @@
 import numpy as np
 import itertools
+import random
+import torch
 
 
 class ContextualBandit():
@@ -67,3 +69,7 @@ class ContextualBandit():
     def _seed(self, seed=None):
         if seed is not None:
             np.random.seed(seed)
+            random.seed(seed)
+            torch.manual_seed(seed)
+            torch.cuda.manual_seed(seed)
+            torch.cuda.manual_seed_all(seed)
