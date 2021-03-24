@@ -9,7 +9,11 @@ class ContextualBandit():
                  n_features,
                  h,
                  noise_std=1.0,
-                ):
+                 seed=None,
+                 ):
+        # if not None, freeze seed for reproducibility
+        self._seed(seed)
+
         # number of rounds
         self.T = T
         # number of arms
@@ -22,7 +26,7 @@ class ContextualBandit():
 
         # standard deviation of Gaussian reward noise
         self.noise_std = noise_std
-        
+
         # generate random features
         self.reset()
 
@@ -31,7 +35,7 @@ class ContextualBandit():
         """Return [0, ...,n_arms-1]
         """
         return range(self.n_arms)
-        
+
     def reset(self):
         """Generate new features and new rewards.
         """
@@ -51,11 +55,15 @@ class ContextualBandit():
         """
         self.rewards = np.array(
             [
-                self.h(self.features[t, k]) + self.noise_std*np.random.randn()\
-                for t,k in itertools.product(range(self.T), range(self.n_arms))
+                self.h(self.features[t, k]) + self.noise_std*np.random.randn()
+                for t, k in itertools.product(range(self.T), range(self.n_arms))
             ]
         ).reshape(self.T, self.n_arms)
 
         # to be used only to compute regret, NOT by the algorithm itself
         self.best_rewards_oracle = np.max(self.rewards, axis=1)
         self.best_actions_oracle = np.argmax(self.rewards, axis=1)
+
+    def _seed(self, seed=None):
+        if seed is not None:
+            np.random.seed(seed)
