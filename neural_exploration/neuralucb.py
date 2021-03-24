@@ -53,6 +53,9 @@ class NeuralUCB(UCB):
                            ).to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate)
 
+        # maximum L2 norm for the features across all arms and all rounds
+        self.bound_features = np.max(np.linalg.norm(bandit.features, ord=2, axis=-1))
+
         super().__init__(bandit,
                          reg_factor=reg_factor,
                          confidence_scaling_factor=confidence_scaling_factor,
@@ -69,9 +72,17 @@ class NeuralUCB(UCB):
 
     @property
     def confidence_multiplier(self):
-        """Constant equal to confidence_scaling_factor
+        """NeuralUCB confidence interval multiplier.
         """
-        return self.confidence_scaling_factor
+        return (
+            self.confidence_scaling_factor
+            * np.sqrt(
+                self.approximator_dim
+                * np.log(
+                    1 + self.iteration * self.bound_features ** 2 / (self.reg_factor * self.approximator_dim)
+                    ) + 2 * np.log(1 / self.delta)
+                )
+            )
 
     def update_output_gradient(self):
         """Get gradient of network prediction w.r.t network weights.

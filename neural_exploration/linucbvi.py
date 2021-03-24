@@ -13,30 +13,30 @@ class LinUCBVI(UCBVI):
                  confidence_scaling_factor=-1.0,
                  bound_theta=1.0,
                  throttle=int(1e2),
-                ):
+                 ):
 
         # range of the linear predictors
         self.bound_theta = bound_theta
-        
+
         super().__init__(mdp,
                          n_episodes=n_episodes,
                          init_state=init_state,
                          reg_factor=reg_factor,
                          confidence_scaling_factor=confidence_scaling_factor,
                          throttle=throttle,
-                        )
+                         )
 
     @property
     def approximator_dim(self):
         """Number of parameters used in the approximator.
         """
         return self.mdp.n_features
-    
+
     def update_output_gradient(self):
         """For linear approximators, simply returns the features.
         """
         self.grad_approx = self.mdp.features
-    
+
     def reset(self):
         """Return the internal estimates
         """
@@ -49,7 +49,7 @@ class LinUCBVI(UCBVI):
 
         # randomly initialize linear predictors within their bounds
         self.theta = np.random.uniform(-1, 1, (self.mdp.H, self.mdp.n_features)) * self.bound_theta
-        
+
         # initialize reward-weighted features sum at zero
         self.b = np.zeros((self.mdp.H, self.mdp.n_features))
 
@@ -58,16 +58,20 @@ class LinUCBVI(UCBVI):
         """LinUCB confidence interval multiplier.
         """
         return self.confidence_scaling_factor
-    
+        # return (
+        #     self.confidence_scaling_factor * self.mdp.H * self.approximator_dim
+        #     * np.log(2 * self.mdp.n_features * self.n_episodes / self.delta)
+        # )
+
     def train(self):
         """Update linear predictor theta.
         """
         self.b[self.mdp.iteration] += self.mdp.features[self.state, self.action] * (self.reward + np.max(self.Q_hat[self.mdp.iteration+1, self.buffer_states[self.mdp.iteration+1]]))
         self.theta[self.mdp.iteration] = np.matmul(
-            self.A_inv[self.mdp.iteration], 
+            self.A_inv[self.mdp.iteration],
             self.b[self.mdp.iteration]
         )
-    
+
     def predict(self):
         """Predict reward.
         """
